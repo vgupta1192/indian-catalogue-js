@@ -1,0 +1,17 @@
+{
+  "name": "indian-hollywood-catalogue",
+  "version": "2.0.0",
+  "description": "Stremio addon for Indian and Hollywood content",
+  "main": "addon.js",
+  "scripts": {
+    "start": "node addon.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "stremio-addon-sdk": "^1.6.11",
+    "axios": "^1.6.2",
+    "node-cache": "^5.1.2"
+  }
+}
