@@ -8,8 +8,8 @@ const PORT = process.env.PORT || 7000;
 const cache = new NodeCache({ stdTTL: 1800, checkperiod: 300, maxKeys: 1000 });
 
 const manifest = {
-  id: 'org.indian.theatrical.catalogue.v3',
-  version: '2.4.0',
+  id: 'org.theatrical.catalogue.2024',
+  version: '3.0.0',
   name: '🎬 Indian + Hollywood Catalogue',
   description: 'Latest theatrical releases with search',
   logo: 'https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg',
@@ -198,15 +198,15 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
   const skip = parseInt(extra.skip || 0);
   const page = Math.floor(skip / 20) + 1;
   const searchQuery = extra.search || '';
-  const cacheKey = searchQuery ? `${id}_s_${searchQuery}_${page}` : `${id}_${page}`;
+  const cacheKey = searchQuery ? `${id}_s_${searchQuery}_p${page}` : `${id}_p${page}`;
 
   const cached = cache.get(cacheKey);
   if (cached) {
-    console.log(`✓ Cache hit: ${id} page ${page}`);
-    return { metas: cached };
+    console.log(`Cache: ${id} p${page}`);
+    return { metas: cached, cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 };
   }
 
-  console.log(`→ Fetching: ${id} page ${page}${searchQuery ? ` search: ${searchQuery}` : ''}`);
+  console.log(`Fetch: ${id} p${page}${searchQuery ? ` q:${searchQuery}` : ''}`);
 
   try {
     let metas = [];
@@ -269,7 +269,6 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         const movies = response.data.results || [];
         const formatted = await Promise.all(movies.map(m => formatMovie(m)));
         metas = formatted.filter(Boolean);
-        console.log(`  Hollywood: ${metas.length} movies`);
 
       } else if (type === 'movie' && id === 'indian_latest') {
         const response = await axios.get('https://api.themoviedb.org/3/discover/movie', {
@@ -287,14 +286,11 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         });
 
         let allMovies = response.data.results || [];
-        console.log(`  Hindi: ${allMovies.length} movies`);
 
         const regionalLangs = ['ta', 'te', 'ml', 'kn', 'mr'];
         
         for (const lang of regionalLangs) {
           if (allMovies.length >= 25) break;
-
-          const langPage = page;
 
           const response2 = await axios.get('https://api.themoviedb.org/3/discover/movie', {
             params: {
@@ -305,7 +301,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
               with_release_type: '3',
               sort_by: 'primary_release_date.desc',
               'vote_count.gte': '0',
-              page: langPage
+              page: page
             },
             timeout: 12000
           });
@@ -313,7 +309,6 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
           const regionalMovies = response2.data.results || [];
           const hindiChecks = await Promise.all(regionalMovies.map(m => hasHindiAudio(m.id)));
           const filteredRegional = regionalMovies.filter((_, idx) => hindiChecks[idx]);
-          console.log(`  ${lang.toUpperCase()}: ${filteredRegional.length} with Hindi audio`);
           allMovies = [...allMovies, ...filteredRegional];
         }
 
@@ -329,7 +324,6 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         uniqueMovies.sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
         const formatted = await Promise.all(uniqueMovies.slice(0, 20).map(m => formatMovie(m)));
         metas = formatted.filter(Boolean);
-        console.log(`  Indian Total: ${metas.length} movies`);
 
       } else if (type === 'series' && id === 'hollywood_series_latest') {
         const response = await axios.get('https://api.themoviedb.org/3/discover/tv', {
@@ -347,21 +341,18 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         const series = response.data.results || [];
         const formatted = await Promise.all(series.map(s => formatSeries(s)));
         metas = formatted.filter(Boolean);
-        console.log(`  TV Series: ${metas.length} shows`);
       }
     }
 
     if (metas.length > 0) {
       cache.set(cacheKey, metas);
-      console.log(`✓ Top results: ${metas.slice(0, 3).map(m => m.name).join(', ')}`);
-    } else {
-      console.log(`  ⚠ No results found`);
+      console.log(`${id} p${page}: ${metas.length} items`);
     }
 
-    return { metas };
+    return { metas, cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 };
   } catch (error) {
-    console.error(`✗ Error ${id}:`, error.message);
-    return { metas: [] };
+    console.error(`Error ${id} p${page}:`, error.message);
+    return { metas: [], cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 };
   }
 });
 
@@ -421,6 +412,12 @@ builder.defineMetaHandler(async ({ type, id }) => {
   }
 });
 
-serveHTTP(builder.getInterface(), { port: PORT });
+const interface = builder.getInterface();
 
-console.log('🎬 Addon v2.4 - IST: ' + getISTDate());
+serveHTTP(interface, { 
+  port: PORT,
+  static: '/public',
+  cacheMaxAge: 0
+});
+
+console.log('Addon v3.0 - IST: ' + getISTDate());
