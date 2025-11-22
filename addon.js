@@ -5,7 +5,7 @@ const NodeCache = require('node-cache');
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const PORT = process.env.PORT || 7000;
 
-// Removed maxKeys to avoid "Cache max keys amount exceeded" errors
+// No maxKeys to avoid "Cache max keys amount exceeded"
 const cache = new NodeCache({ stdTTL: 1800, checkperiod: 300 });
 
 // Number of metas Stremio will see per "page" (per scroll window)
@@ -13,7 +13,7 @@ const PAGE_SIZE = 40;
 
 const manifest = {
   id: 'org.theatrical.catalogue.2024',
-  version: '3.1.1',
+  version: '3.1.2',
   name: '🎬 Indian + Hollywood Catalogue',
   description: 'Latest theatrical releases with search',
   logo: 'https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg',
@@ -206,7 +206,7 @@ async function fetchCatalogPage({ type, id, searchQuery, page, todayIST }) {
     if (type === 'movie') {
       const response = await axios.get('https://api.themoviedb.org/3/search/movie', {
         params: { api_key: TMDB_API_KEY, query: searchQuery, page: page },
-        timeout: 12000
+        timeout: 8000
       });
 
       let movies = response.data.results || [];
@@ -230,7 +230,7 @@ async function fetchCatalogPage({ type, id, searchQuery, page, todayIST }) {
     } else if (type === 'series') {
       const response = await axios.get('https://api.themoviedb.org/3/search/tv', {
         params: { api_key: TMDB_API_KEY, query: searchQuery, page: page },
-        timeout: 12000
+        timeout: 8000
       });
 
       let series = response.data.results || [];
@@ -255,7 +255,7 @@ async function fetchCatalogPage({ type, id, searchQuery, page, todayIST }) {
           'vote_count.gte': '5',
           page: page
         },
-        timeout: 12000
+        timeout: 8000
       });
 
       const movies = response.data.results || [];
@@ -274,7 +274,7 @@ async function fetchCatalogPage({ type, id, searchQuery, page, todayIST }) {
           'vote_count.gte': '0',
           page: page
         },
-        timeout: 12000
+        timeout: 8000
       });
 
       let allMovies = response.data.results || [];
@@ -293,7 +293,7 @@ async function fetchCatalogPage({ type, id, searchQuery, page, todayIST }) {
             'vote_count.gte': '0',
             page: page
           },
-          timeout: 12000
+          timeout: 8000
         });
 
         const regionalMovies = response2.data.results || [];
@@ -325,7 +325,7 @@ async function fetchCatalogPage({ type, id, searchQuery, page, todayIST }) {
           'vote_count.gte': '10',
           page: page
         },
-        timeout: 12000
+        timeout: 8000
       });
 
       const series = response.data.results || [];
@@ -354,16 +354,16 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
   console.log(`Catalog request: id=${id}, type=${type}, skip=${skip}, search="${searchQuery}", currentCached=${list.length}, nextTmdbPage=${tmdbPage}, done=${done}`);
 
   try {
-    // Fetch more pages until we have enough to satisfy this skip window or TMDB is exhausted
-    while (!done && list.length < skip + PAGE_SIZE) {
+    // Fetch at most ONE TMDB page per request for snappier UI
+    if (!done && list.length < skip + PAGE_SIZE) {
       const pageMetas = await fetchCatalogPage({ type, id, searchQuery, page: tmdbPage, todayIST });
       console.log(`Fetched TMDB page ${tmdbPage} for ${keyBase}: got ${pageMetas.length} metas`);
       if (!pageMetas.length) {
         done = true;
-        break;
+      } else {
+        list = list.concat(pageMetas);
+        tmdbPage += 1;
       }
-      list = list.concat(pageMetas);
-      tmdbPage += 1;
     }
 
     cache.set(listKey, list);
@@ -371,7 +371,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
     cache.set(doneKey, done);
 
     const slice = list.slice(skip, skip + PAGE_SIZE);
-    console.log(`Responding hollywood_latest: skip=${skip}, returning=${slice.length}, totalCached=${list.length}, nextTmdbPage=${tmdbPage}, done=${done}`);
+    console.log(`Responding ${id}: skip=${skip}, returning=${slice.length}, totalCached=${list.length}, nextTmdbPage=${tmdbPage}, done=${done}`);
 
     return { metas: slice, cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 };
   } catch (error) {
@@ -438,4 +438,4 @@ builder.defineMetaHandler(async ({ type, id }) => {
 
 serveHTTP(builder.getInterface(), { port: PORT });
 
-console.log('Addon v3.1.1 - IST: ' + getISTDate());
+console.log('Addon v3.1.2 - IST: ' + getISTDate());
