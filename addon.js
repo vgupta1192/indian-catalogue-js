@@ -5,14 +5,15 @@ const NodeCache = require('node-cache');
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const PORT = process.env.PORT || 7000;
 
-const cache = new NodeCache({ stdTTL: 1800, checkperiod: 300, maxKeys: 1000 });
+// Removed maxKeys to avoid "Cache max keys amount exceeded" errors
+const cache = new NodeCache({ stdTTL: 1800, checkperiod: 300 });
 
 // Number of metas Stremio will see per "page" (per scroll window)
 const PAGE_SIZE = 40;
 
 const manifest = {
   id: 'org.theatrical.catalogue.2024',
-  version: '3.1.0',
+  version: '3.1.1',
   name: '🎬 Indian + Hollywood Catalogue',
   description: 'Latest theatrical releases with search',
   logo: 'https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg',
@@ -370,7 +371,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
     cache.set(doneKey, done);
 
     const slice = list.slice(skip, skip + PAGE_SIZE);
-    console.log(`Responding ${id}: skip=${skip}, returning=${slice.length}, totalCached=${list.length}, nextTmdbPage=${tmdbPage}, done=${done}`);
+    console.log(`Responding hollywood_latest: skip=${skip}, returning=${slice.length}, totalCached=${list.length}, nextTmdbPage=${tmdbPage}, done=${done}`);
 
     return { metas: slice, cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 };
   } catch (error) {
@@ -437,4 +438,4 @@ builder.defineMetaHandler(async ({ type, id }) => {
 
 serveHTTP(builder.getInterface(), { port: PORT });
 
-console.log('Addon v3.1.0 - IST: ' + getISTDate());
+console.log('Addon v3.1.1 - IST: ' + getISTDate());
