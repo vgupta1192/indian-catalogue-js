@@ -5,13 +5,13 @@ const NodeCache = require('node-cache');
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const PORT = process.env.PORT || 7000;
 
-const cache = new NodeCache({ stdTTL: 7200, checkperiod: 600, maxKeys: 2000 });
+const cache = new NodeCache({ stdTTL: 3600, checkperiod: 600, maxKeys: 1500 });
 
 const manifest = {
   id: 'org.indian.theatrical.catalogue',
-  version: '2.1.0',
+  version: '2.2.0',
   name: '🎬 Indian + Hollywood Catalogue',
-  description: 'Latest Indian movies, Hollywood movies, and TV series with search',
+  description: 'Latest theatrical releases with search',
   logo: 'https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg',
   resources: ['catalog', 'meta'],
   types: ['movie', 'series'],
@@ -52,11 +52,13 @@ const builder = new addonBuilder(manifest);
 
 function getCurrentDateIST() {
   const now = new Date();
-  const istOffset = 5.5 * 60 * 60 * 1000;
-  const istTime = new Date(now.getTime() + istOffset);
-  const year = istTime.getUTCFullYear();
-  const month = String(istTime.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(istTime.getUTCDate()).padStart(2, '0');
+  const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const istTime = new Date(utcTime + (3600000 * 5.5));
+  
+  const year = istTime.getFullYear();
+  const month = String(istTime.getMonth() + 1).padStart(2, '0');
+  const day = String(istTime.getDate()).padStart(2, '0');
+  
   return `${year}-${month}-${day}`;
 }
 
@@ -96,7 +98,13 @@ async function hasHindiAudio(movieId) {
   try {
     const response = await axios.get(
       `https://api.themoviedb.org/3/movie/${movieId}`,
-      { params: { api_key: TMDB_API_KEY, append_to_response: 'translations' }, timeout: 6000 }
+      { 
+        params: { 
+          api_key: TMDB_API_KEY, 
+          append_to_response: 'translations,release_dates' 
+        }, 
+        timeout: 6000 
+      }
     );
 
     const originalLang = response.data.original_language;
@@ -106,14 +114,37 @@ async function hasHindiAudio(movieId) {
     }
 
     const translations = response.data.translations?.translations || [];
-    const hasHindi = translations.some(t => t.iso_639_1 === 'hi');
+    const hasHindiTrans = translations.some(t => t.iso_639_1 === 'hi');
     
-    cache.set(cacheKey, hasHindi);
-    return hasHindi;
+    if (hasHindiTrans) {
+      cache.set(cacheKey, true);
+      return true;
+    }
+
+    const releaseDates = response.data.release_dates?.results || [];
+    const indiaRelease = releaseDates.find(r => r.iso_3166_1 === 'IN');
+    if (indiaRelease) {
+      cache.set(cacheKey, true);
+      return true;
+    }
+
+    cache.set(cacheKey, false);
+    return false;
   } catch {
     cache.set(cacheKey, false);
     return false;
   }
+}
+
+function formatReleaseDate(dateStr) {
+  if (!dateStr) return null;
+  
+  const date = new Date(dateStr);
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  
+  return `${day}-${month}-${year}`;
 }
 
 async function formatMovie(movie) {
@@ -127,6 +158,7 @@ async function formatMovie(movie) {
 
   const langLabel = getLanguageLabel(movie.original_language || '');
   const rating = movie.vote_average ? movie.vote_average.toFixed(1) : '';
+  const releaseDate = formatReleaseDate(movie.release_date);
 
   return {
     id: imdbId,
@@ -136,7 +168,7 @@ async function formatMovie(movie) {
     posterShape: 'poster',
     background: movie.backdrop_path ? `https://image.tmdb.org/t/p/original${movie.backdrop_path}` : undefined,
     description: movie.overview || 'No description',
-    releaseInfo: movie.release_date ? movie.release_date.substring(0, 4) : undefined,
+    releaseInfo: releaseDate || (movie.release_date ? movie.release_date.substring(0, 4) : undefined),
     imdbRating: rating,
     language: langLabel
   };
@@ -153,6 +185,7 @@ async function formatSeries(series) {
 
   const langLabel = getLanguageLabel(series.original_language || '');
   const rating = series.vote_average ? series.vote_average.toFixed(1) : '';
+  const releaseDate = formatReleaseDate(series.first_air_date);
 
   return {
     id: imdbId,
@@ -162,7 +195,7 @@ async function formatSeries(series) {
     posterShape: 'poster',
     background: series.backdrop_path ? `https://image.tmdb.org/t/p/original${series.backdrop_path}` : undefined,
     description: series.overview || 'No description',
-    releaseInfo: series.first_air_date ? series.first_air_date.substring(0, 4) : undefined,
+    releaseInfo: releaseDate || (series.first_air_date ? series.first_air_date.substring(0, 4) : undefined),
     imdbRating: rating,
     language: langLabel
   };
@@ -246,9 +279,9 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
             'primary_release_date.lte': todayIST,
             with_original_language: 'en',
             region: 'US',
-            with_release_type: '2|3',
+            with_release_type: '3',
             sort_by: 'primary_release_date.desc',
-            'vote_count.gte': '10',
+            'vote_count.gte': '5',
             page: page
           },
           timeout: 12000
@@ -257,7 +290,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         const movies = response.data.results || [];
         const formatted = await Promise.all(movies.map(m => formatMovie(m)));
         metas = formatted.filter(Boolean);
-        console.log(`Hollywood: ${metas.length} movies`);
+        console.log(`Hollywood: ${metas.length} movies (today: ${todayIST})`);
 
       } else if (type === 'movie' && id === 'indian_latest') {
         const response = await axios.get('https://api.themoviedb.org/3/discover/movie', {
@@ -266,23 +299,23 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
             'primary_release_date.lte': todayIST,
             with_original_language: 'hi',
             region: 'IN',
-            with_release_type: '2|3',
+            with_release_type: '3',
             sort_by: 'primary_release_date.desc',
-            'vote_count.gte': '2',
+            'vote_count.gte': '1',
             page: page
           },
           timeout: 12000
         });
 
         let allMovies = response.data.results || [];
-        console.log(`Hindi movies: ${allMovies.length}`);
+        console.log(`Hindi movies: ${allMovies.length} (today: ${todayIST})`);
 
         const regionalLangs = ['ta', 'te', 'ml', 'kn', 'mr', 'bn', 'pa'];
         
         for (const lang of regionalLangs) {
-          if (allMovies.length >= 20) break;
+          if (allMovies.length >= 25) break;
 
-          const langPage = Math.ceil(page / regionalLangs.length);
+          const langPage = Math.ceil(page / 2);
           
           const response2 = await axios.get('https://api.themoviedb.org/3/discover/movie', {
             params: {
@@ -290,9 +323,9 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
               'primary_release_date.lte': todayIST,
               with_original_language: lang,
               region: 'IN',
-              with_release_type: '2|3',
+              with_release_type: '3',
               sort_by: 'primary_release_date.desc',
-              'vote_count.gte': '2',
+              'vote_count.gte': '1',
               page: langPage
             },
             timeout: 12000
@@ -330,7 +363,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
             'first_air_date.lte': todayIST,
             with_original_language: 'en',
             sort_by: 'first_air_date.desc',
-            'vote_count.gte': '20',
+            'vote_count.gte': '10',
             page: page
           },
           timeout: 12000
@@ -420,14 +453,9 @@ builder.defineMetaHandler(async ({ type, id }) => {
 serveHTTP(builder.getInterface(), { port: PORT });
 
 console.log('\n' + '='.repeat(60));
-console.log('🎬 Indian + Hollywood Catalogue v2.1');
+console.log('🎬 Indian + Hollywood Catalogue v2.2');
 console.log('='.repeat(60));
 console.log(`📅 IST Date: ${getCurrentDateIST()}`);
 console.log('='.repeat(60));
-console.log('✨ Features:');
-console.log('  • 🎥 Hollywood Movies (with search)');
-console.log('  • 🇮🇳 Indian Movies (Hindi + Regional with Hindi, with search)');
-console.log('  • 📺 TV Series (with search)');
-console.log('  • ♾️ Infinite scroll');
-console.log('  • 🔍 Search in all catalogs');
+console.log('✨ Theatrical releases only (with exact dates)');
 console.log('='.repeat(60) + '\n');
