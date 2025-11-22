@@ -412,12 +412,6 @@ builder.defineMetaHandler(async ({ type, id }) => {
   }
 });
 
-const interface = builder.getInterface();
-
-serveHTTP(interface, { 
-  port: PORT,
-  static: '/public',
-  cacheMaxAge: 0
-});
+serveHTTP(builder.getInterface(), { port: PORT });
 
 console.log('Addon v3.0 - IST: ' + getISTDate());
