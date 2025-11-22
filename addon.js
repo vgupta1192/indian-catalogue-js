@@ -7,9 +7,12 @@ const PORT = process.env.PORT || 7000;
 
 const cache = new NodeCache({ stdTTL: 1800, checkperiod: 300, maxKeys: 1000 });
 
+// Number of metas Stremio will see per "page" (per scroll window)
+const PAGE_SIZE = 40;
+
 const manifest = {
   id: 'org.theatrical.catalogue.2024',
-  version: '3.0.1',
+  version: '3.1.0',
   name: '🎬 Indian + Hollywood Catalogue',
   description: 'Latest theatrical releases with search',
   logo: 'https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg',
@@ -194,98 +197,95 @@ async function formatSeries(series) {
   };
 }
 
-builder.defineCatalogHandler(async ({ type, id, extra }) => {
-  const searchQuery = extra.search || '';
-  const skip = parseInt(extra.skip || 0, 10) || 0;
+// Fetch and format a single "TMDB page" for a given catalog
+async function fetchCatalogPage({ type, id, searchQuery, page, todayIST }) {
+  let metas = [];
 
-  // Base key for this catalog + search combination
-  const pageSizeKeyBase = searchQuery ? `${id}_s_${searchQuery}` : `${id}`;
-  const pageSizeKey = `ps_${pageSizeKeyBase}`;
+  if (searchQuery) {
+    if (type === 'movie') {
+      const response = await axios.get('https://api.themoviedb.org/3/search/movie', {
+        params: { api_key: TMDB_API_KEY, query: searchQuery, page: page },
+        timeout: 12000
+      });
 
-  // Guess page size from cache, default 20 until we learn real size
-  let pageSize = cache.get(pageSizeKey) || 20;
+      let movies = response.data.results || [];
 
-  // Derive TMDB page from how many items Stremio says it already has
-  const page = Math.floor(skip / pageSize) + 1;
-
-  const cacheKey = `${pageSizeKeyBase}_p${page}`;
-
-  const cached = cache.get(cacheKey);
-  if (cached) {
-    console.log(`Cache: ${id} skip=${skip} p${page} pageSize=${pageSize}`);
-    return { metas: cached, cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 };
-  }
-
-  console.log(`Fetch: ${id} skip=${skip} p${page}${searchQuery ? ` q:${searchQuery}` : ''} pageSizeGuess=${pageSize}`);
-
-  try {
-    let metas = [];
-    const todayIST = getISTDate();
-
-    if (searchQuery) {
-      if (type === 'movie') {
-        const response = await axios.get('https://api.themoviedb.org/3/search/movie', {
-          params: { api_key: TMDB_API_KEY, query: searchQuery, page: page },
-          timeout: 12000
-        });
-
-        let movies = response.data.results || [];
-
-        if (id === 'indian_latest') {
-          const indianLangs = ['hi', 'ta', 'te', 'ml', 'kn', 'mr', 'bn', 'pa'];
-          const hindiChecks = await Promise.all(movies.map(async m => {
-            if (indianLangs.includes(m.original_language)) {
-              return await hasHindiAudio(m.id);
-            }
-            return false;
-          }));
-          movies = movies.filter((_, idx) => hindiChecks[idx]);
-        } else if (id === 'hollywood_latest') {
-          movies = movies.filter(m => m.original_language === 'en');
-        }
-
-        const formatted = await Promise.all(movies.map(m => formatMovie(m)));
-        metas = formatted.filter(Boolean);
-      } else if (type === 'series') {
-        const response = await axios.get('https://api.themoviedb.org/3/search/tv', {
-          params: { api_key: TMDB_API_KEY, query: searchQuery, page: page },
-          timeout: 12000
-        });
-
-        let series = response.data.results || [];
-        if (id === 'hollywood_series_latest') {
-          series = series.filter(s => s.original_language === 'en');
-        }
-
-        const formatted = await Promise.all(series.map(s => formatSeries(s)));
-        metas = formatted.filter(Boolean);
+      if (id === 'indian_latest') {
+        const indianLangs = ['hi', 'ta', 'te', 'ml', 'kn', 'mr', 'bn', 'pa'];
+        const hindiChecks = await Promise.all(movies.map(async m => {
+          if (indianLangs.includes(m.original_language)) {
+            return await hasHindiAudio(m.id);
+          }
+          return false;
+        }));
+        movies = movies.filter((_, idx) => hindiChecks[idx]);
+      } else if (id === 'hollywood_latest') {
+        movies = movies.filter(m => m.original_language === 'en');
       }
-    } else {
-      if (type === 'movie' && id === 'hollywood_latest') {
-        const response = await axios.get('https://api.themoviedb.org/3/discover/movie', {
+
+      const formatted = await Promise.all(movies.map(m => formatMovie(m)));
+      metas = formatted.filter(Boolean);
+
+    } else if (type === 'series') {
+      const response = await axios.get('https://api.themoviedb.org/3/search/tv', {
+        params: { api_key: TMDB_API_KEY, query: searchQuery, page: page },
+        timeout: 12000
+      });
+
+      let series = response.data.results || [];
+      if (id === 'hollywood_series_latest') {
+        series = series.filter(s => s.original_language === 'en');
+      }
+
+      const formatted = await Promise.all(series.map(s => formatSeries(s)));
+      metas = formatted.filter(Boolean);
+    }
+
+  } else {
+    if (type === 'movie' && id === 'hollywood_latest') {
+      const response = await axios.get('https://api.themoviedb.org/3/discover/movie', {
+        params: {
+          api_key: TMDB_API_KEY,
+          'primary_release_date.lte': todayIST,
+          with_original_language: 'en',
+          region: 'US',
+          with_release_type: '3',
+          sort_by: 'primary_release_date.desc',
+          'vote_count.gte': '5',
+          page: page
+        },
+        timeout: 12000
+      });
+
+      const movies = response.data.results || [];
+      const formatted = await Promise.all(movies.map(m => formatMovie(m)));
+      metas = formatted.filter(Boolean);
+
+    } else if (type === 'movie' && id === 'indian_latest') {
+      const response = await axios.get('https://api.themoviedb.org/3/discover/movie', {
+        params: {
+          api_key: TMDB_API_KEY,
+          'primary_release_date.lte': todayIST,
+          with_original_language: 'hi',
+          region: 'IN',
+          with_release_type: '3',
+          sort_by: 'primary_release_date.desc',
+          'vote_count.gte': '0',
+          page: page
+        },
+        timeout: 12000
+      });
+
+      let allMovies = response.data.results || [];
+
+      const regionalLangs = ['ta', 'te', 'ml', 'kn', 'mr'];
+      
+      for (const lang of regionalLangs) {
+        const response2 = await axios.get('https://api.themoviedb.org/3/discover/movie', {
           params: {
             api_key: TMDB_API_KEY,
             'primary_release_date.lte': todayIST,
-            with_original_language: 'en',
-            region: 'US',
-            with_release_type: '3',
-            sort_by: 'primary_release_date.desc',
-            'vote_count.gte': '5',
-            page: page
-          },
-          timeout: 12000
-        });
-
-        const movies = response.data.results || [];
-        const formatted = await Promise.all(movies.map(m => formatMovie(m)));
-        metas = formatted.filter(Boolean);
-
-      } else if (type === 'movie' && id === 'indian_latest') {
-        const response = await axios.get('https://api.themoviedb.org/3/discover/movie', {
-          params: {
-            api_key: TMDB_API_KEY,
-            'primary_release_date.lte': todayIST,
-            with_original_language: 'hi',
+            with_original_language: lang,
             region: 'IN',
             with_release_type: '3',
             sort_by: 'primary_release_date.desc',
@@ -295,77 +295,86 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
           timeout: 12000
         });
 
-        let allMovies = response.data.results || [];
-
-        const regionalLangs = ['ta', 'te', 'ml', 'kn', 'mr'];
-        
-        for (const lang of regionalLangs) {
-          if (allMovies.length >= 25) break;
-
-          const response2 = await axios.get('https://api.themoviedb.org/3/discover/movie', {
-            params: {
-              api_key: TMDB_API_KEY,
-              'primary_release_date.lte': todayIST,
-              with_original_language: lang,
-              region: 'IN',
-              with_release_type: '3',
-              sort_by: 'primary_release_date.desc',
-              'vote_count.gte': '0',
-              page: page
-            },
-            timeout: 12000
-          });
-
-          const regionalMovies = response2.data.results || [];
-          const hindiChecks = await Promise.all(regionalMovies.map(m => hasHindiAudio(m.id)));
-          const filteredRegional = regionalMovies.filter((_, idx) => hindiChecks[idx]);
-          allMovies = [...allMovies, ...filteredRegional];
-        }
-
-        const uniqueMovies = [];
-        const seenIds = new Set();
-        for (const movie of allMovies) {
-          if (!seenIds.has(movie.id)) {
-            seenIds.add(movie.id);
-            uniqueMovies.push(movie);
-          }
-        }
-
-        uniqueMovies.sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
-        const formatted = await Promise.all(uniqueMovies.slice(0, 20).map(m => formatMovie(m)));
-        metas = formatted.filter(Boolean);
-
-      } else if (type === 'series' && id === 'hollywood_series_latest') {
-        const response = await axios.get('https://api.themoviedb.org/3/discover/tv', {
-          params: {
-            api_key: TMDB_API_KEY,
-            'first_air_date.lte': todayIST,
-            with_original_language: 'en',
-            sort_by: 'first_air_date.desc',
-            'vote_count.gte': '10',
-            page: page
-          },
-          timeout: 12000
-        });
-
-        const series = response.data.results || [];
-        const formatted = await Promise.all(series.map(s => formatSeries(s)));
-        metas = formatted.filter(Boolean);
+        const regionalMovies = response2.data.results || [];
+        const hindiChecks = await Promise.all(regionalMovies.map(m => hasHindiAudio(m.id)));
+        const filteredRegional = regionalMovies.filter((_, idx) => hindiChecks[idx]);
+        allMovies = [...allMovies, ...filteredRegional];
       }
+
+      const uniqueMovies = [];
+      const seenIds = new Set();
+      for (const movie of allMovies) {
+        if (!seenIds.has(movie.id)) {
+          seenIds.add(movie.id);
+          uniqueMovies.push(movie);
+        }
+      }
+
+      uniqueMovies.sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
+      const formatted = await Promise.all(uniqueMovies.slice(0, 20).map(m => formatMovie(m)));
+      metas = formatted.filter(Boolean);
+
+    } else if (type === 'series' && id === 'hollywood_series_latest') {
+      const response = await axios.get('https://api.themoviedb.org/3/discover/tv', {
+        params: {
+          api_key: TMDB_API_KEY,
+          'first_air_date.lte': todayIST,
+          with_original_language: 'en',
+          sort_by: 'first_air_date.desc',
+          'vote_count.gte': '10',
+          page: page
+        },
+        timeout: 12000
+      });
+
+      const series = response.data.results || [];
+      const formatted = await Promise.all(series.map(s => formatSeries(s)));
+      metas = formatted.filter(Boolean);
+    }
+  }
+
+  return metas;
+}
+
+builder.defineCatalogHandler(async ({ type, id, extra }) => {
+  const searchQuery = (extra.search || '').trim();
+  const skip = parseInt(extra.skip || 0, 10) || 0;
+  const todayIST = getISTDate();
+
+  const keyBase = searchQuery ? `${id}_s_${searchQuery.toLowerCase()}` : id;
+  const listKey = `list_${keyBase}`;
+  const tmdbPageKey = `tmdbp_${keyBase}`;
+  const doneKey = `done_${keyBase}`;
+
+  let list = cache.get(listKey) || [];
+  let tmdbPage = cache.get(tmdbPageKey) || 1;
+  let done = cache.get(doneKey) || false;
+
+  console.log(`Catalog request: id=${id}, type=${type}, skip=${skip}, search="${searchQuery}", currentCached=${list.length}, nextTmdbPage=${tmdbPage}, done=${done}`);
+
+  try {
+    // Fetch more pages until we have enough to satisfy this skip window or TMDB is exhausted
+    while (!done && list.length < skip + PAGE_SIZE) {
+      const pageMetas = await fetchCatalogPage({ type, id, searchQuery, page: tmdbPage, todayIST });
+      console.log(`Fetched TMDB page ${tmdbPage} for ${keyBase}: got ${pageMetas.length} metas`);
+      if (!pageMetas.length) {
+        done = true;
+        break;
+      }
+      list = list.concat(pageMetas);
+      tmdbPage += 1;
     }
 
-    if (metas.length > 0) {
-      cache.set(cacheKey, metas);
-      if (skip === 0) {
-        cache.set(pageSizeKey, metas.length, 86400);
-        console.log(`Page size learned for ${pageSizeKeyBase}: ${metas.length}`);
-      }
-      console.log(`${id} p${page}: ${metas.length} items`);
-    }
+    cache.set(listKey, list);
+    cache.set(tmdbPageKey, tmdbPage);
+    cache.set(doneKey, done);
 
-    return { metas, cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 };
+    const slice = list.slice(skip, skip + PAGE_SIZE);
+    console.log(`Responding ${id}: skip=${skip}, returning=${slice.length}, totalCached=${list.length}, nextTmdbPage=${tmdbPage}, done=${done}`);
+
+    return { metas: slice, cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 };
   } catch (error) {
-    console.error(`Error ${id} p${page}:`, error.message);
+    console.error(`Error in catalog handler for ${id}:`, error.message);
     return { metas: [], cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 };
   }
 });
@@ -428,4 +437,4 @@ builder.defineMetaHandler(async ({ type, id }) => {
 
 serveHTTP(builder.getInterface(), { port: PORT });
 
-console.log('Addon v3.0.1 - IST: ' + getISTDate());
+console.log('Addon v3.1.0 - IST: ' + getISTDate());
