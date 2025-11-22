@@ -5,11 +5,11 @@ const NodeCache = require('node-cache');
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const PORT = process.env.PORT || 7000;
 
-const cache = new NodeCache({ stdTTL: 3600, checkperiod: 600, maxKeys: 1500 });
+const cache = new NodeCache({ stdTTL: 1800, checkperiod: 300, maxKeys: 1000 });
 
 const manifest = {
   id: 'org.indian.theatrical.catalogue',
-  version: '2.2.0',
+  version: '2.3.0',
   name: '🎬 Indian + Hollywood Catalogue',
   description: 'Latest theatrical releases with search',
   logo: 'https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg',
@@ -50,7 +50,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-function getCurrentDateIST() {
+function getISTDates() {
   const now = new Date();
   const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
   const istTime = new Date(utcTime + (3600000 * 5.5));
@@ -58,8 +58,16 @@ function getCurrentDateIST() {
   const year = istTime.getFullYear();
   const month = String(istTime.getMonth() + 1).padStart(2, '0');
   const day = String(istTime.getDate()).padStart(2, '0');
+  const today = `${year}-${month}-${day}`;
   
-  return `${year}-${month}-${day}`;
+  const past = new Date(istTime);
+  past.setDate(past.getDate() - 90);
+  const fromYear = past.getFullYear();
+  const fromMonth = String(past.getMonth() + 1).padStart(2, '0');
+  const fromDay = String(past.getDate()).padStart(2, '0');
+  const from = `${fromYear}-${fromMonth}-${fromDay}`;
+  
+  return { today, from };
 }
 
 function getLanguageLabel(lang) {
@@ -82,10 +90,10 @@ async function getIMDBId(tmdbId, type = 'movie') {
       { params: { api_key: TMDB_API_KEY }, timeout: 8000 }
     );
     const imdbId = response.data?.imdb_id || null;
-    cache.set(cacheKey, imdbId);
+    cache.set(cacheKey, imdbId, 86400);
     return imdbId;
   } catch {
-    cache.set(cacheKey, null);
+    cache.set(cacheKey, null, 3600);
     return null;
   }
 }
@@ -109,7 +117,7 @@ async function hasHindiAudio(movieId) {
 
     const originalLang = response.data.original_language;
     if (originalLang === 'hi') {
-      cache.set(cacheKey, true);
+      cache.set(cacheKey, true, 86400);
       return true;
     }
 
@@ -117,45 +125,40 @@ async function hasHindiAudio(movieId) {
     const hasHindiTrans = translations.some(t => t.iso_639_1 === 'hi');
     
     if (hasHindiTrans) {
-      cache.set(cacheKey, true);
+      cache.set(cacheKey, true, 86400);
       return true;
     }
 
     const releaseDates = response.data.release_dates?.results || [];
     const indiaRelease = releaseDates.find(r => r.iso_3166_1 === 'IN');
     if (indiaRelease) {
-      cache.set(cacheKey, true);
+      cache.set(cacheKey, true, 86400);
       return true;
     }
 
-    cache.set(cacheKey, false);
+    cache.set(cacheKey, false, 3600);
     return false;
   } catch {
-    cache.set(cacheKey, false);
+    cache.set(cacheKey, false, 3600);
     return false;
   }
 }
 
 function formatReleaseDate(dateStr) {
   if (!dateStr) return null;
-  
   const date = new Date(dateStr);
   const day = String(date.getDate()).padStart(2, '0');
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const year = date.getFullYear();
-  
   return `${day}-${month}-${year}`;
 }
 
 async function formatMovie(movie) {
   if (!movie.poster_path) return null;
-
   const tmdbId = movie.id;
   if (!tmdbId) return null;
-
   const imdbId = await getIMDBId(tmdbId, 'movie');
   if (!imdbId) return null;
-
   const langLabel = getLanguageLabel(movie.original_language || '');
   const rating = movie.vote_average ? movie.vote_average.toFixed(1) : '';
   const releaseDate = formatReleaseDate(movie.release_date);
@@ -176,13 +179,10 @@ async function formatMovie(movie) {
 
 async function formatSeries(series) {
   if (!series.poster_path) return null;
-
   const tmdbId = series.id;
   if (!tmdbId) return null;
-
   const imdbId = await getIMDBId(tmdbId, 'series');
   if (!imdbId) return null;
-
   const langLabel = getLanguageLabel(series.original_language || '');
   const rating = series.vote_average ? series.vote_average.toFixed(1) : '';
   const releaseDate = formatReleaseDate(series.first_air_date);
@@ -205,29 +205,25 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
   const skip = parseInt(extra.skip || 0);
   const page = Math.floor(skip / 20) + 1;
   const searchQuery = extra.search || '';
-  const cacheKey = searchQuery ? `${id}_search_${searchQuery}_${page}` : `${id}_${page}`;
+  const timestamp = Date.now();
+  const cacheKey = searchQuery ? `${id}_s_${searchQuery}_${page}_${Math.floor(timestamp/1800000)}` : `${id}_${page}_${Math.floor(timestamp/1800000)}`;
 
   const cached = cache.get(cacheKey);
   if (cached) {
-    console.log(`Cache hit: ${id} page ${page}${searchQuery ? ` search: ${searchQuery}` : ''}`);
+    console.log(`Cache: ${id} p${page}`);
     return { metas: cached };
   }
 
-  console.log(`Fetching ${id} page ${page}${searchQuery ? ` search: ${searchQuery}` : ''}`);
+  console.log(`Fetch: ${id} p${page}${searchQuery ? ` q:${searchQuery}` : ''}`);
 
   try {
     let metas = [];
-    const todayIST = getCurrentDateIST();
+    const { today, from } = getISTDates();
 
     if (searchQuery) {
       if (type === 'movie') {
         const response = await axios.get('https://api.themoviedb.org/3/search/movie', {
-          params: {
-            api_key: TMDB_API_KEY,
-            query: searchQuery,
-            page: page,
-            include_adult: false
-          },
+          params: { api_key: TMDB_API_KEY, query: searchQuery, page: page },
           timeout: 12000
         });
 
@@ -248,15 +244,9 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
 
         const formatted = await Promise.all(movies.map(m => formatMovie(m)));
         metas = formatted.filter(Boolean);
-
       } else if (type === 'series') {
         const response = await axios.get('https://api.themoviedb.org/3/search/tv', {
-          params: {
-            api_key: TMDB_API_KEY,
-            query: searchQuery,
-            page: page,
-            include_adult: false
-          },
+          params: { api_key: TMDB_API_KEY, query: searchQuery, page: page },
           timeout: 12000
         });
 
@@ -268,15 +258,13 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         const formatted = await Promise.all(series.map(s => formatSeries(s)));
         metas = formatted.filter(Boolean);
       }
-
-      console.log(`Search results: ${metas.length}`);
-
     } else {
       if (type === 'movie' && id === 'hollywood_latest') {
         const response = await axios.get('https://api.themoviedb.org/3/discover/movie', {
           params: {
             api_key: TMDB_API_KEY,
-            'primary_release_date.lte': todayIST,
+            'primary_release_date.gte': from,
+            'primary_release_date.lte': today,
             with_original_language: 'en',
             region: 'US',
             with_release_type: '3',
@@ -290,54 +278,51 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         const movies = response.data.results || [];
         const formatted = await Promise.all(movies.map(m => formatMovie(m)));
         metas = formatted.filter(Boolean);
-        console.log(`Hollywood: ${metas.length} movies (today: ${todayIST})`);
+        console.log(`Hollywood: ${metas.length} (${from} to ${today})`);
 
       } else if (type === 'movie' && id === 'indian_latest') {
         const response = await axios.get('https://api.themoviedb.org/3/discover/movie', {
           params: {
             api_key: TMDB_API_KEY,
-            'primary_release_date.lte': todayIST,
+            'primary_release_date.gte': from,
+            'primary_release_date.lte': today,
             with_original_language: 'hi',
             region: 'IN',
             with_release_type: '3',
             sort_by: 'primary_release_date.desc',
-            'vote_count.gte': '1',
+            'vote_count.gte': '0',
             page: page
           },
           timeout: 12000
         });
 
         let allMovies = response.data.results || [];
-        console.log(`Hindi movies: ${allMovies.length} (today: ${todayIST})`);
+        console.log(`Hindi: ${allMovies.length} (${from} to ${today})`);
 
-        const regionalLangs = ['ta', 'te', 'ml', 'kn', 'mr', 'bn', 'pa'];
+        const regionalLangs = ['ta', 'te', 'ml', 'kn', 'mr'];
         
         for (const lang of regionalLangs) {
           if (allMovies.length >= 25) break;
 
-          const langPage = Math.ceil(page / 2);
-          
           const response2 = await axios.get('https://api.themoviedb.org/3/discover/movie', {
             params: {
               api_key: TMDB_API_KEY,
-              'primary_release_date.lte': todayIST,
+              'primary_release_date.gte': from,
+              'primary_release_date.lte': today,
               with_original_language: lang,
               region: 'IN',
               with_release_type: '3',
               sort_by: 'primary_release_date.desc',
-              'vote_count.gte': '1',
-              page: langPage
+              'vote_count.gte': '0',
+              page: Math.ceil(page / 2)
             },
             timeout: 12000
           });
 
           const regionalMovies = response2.data.results || [];
-          console.log(`${lang} movies: ${regionalMovies.length}`);
-
           const hindiChecks = await Promise.all(regionalMovies.map(m => hasHindiAudio(m.id)));
           const filteredRegional = regionalMovies.filter((_, idx) => hindiChecks[idx]);
-          console.log(`${lang} with Hindi: ${filteredRegional.length}`);
-
+          console.log(`${lang}: ${filteredRegional.length}`);
           allMovies = [...allMovies, ...filteredRegional];
         }
 
@@ -351,16 +336,16 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         }
 
         uniqueMovies.sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
-
         const formatted = await Promise.all(uniqueMovies.slice(0, 20).map(m => formatMovie(m)));
         metas = formatted.filter(Boolean);
-        console.log(`Indian: ${metas.length} movies`);
+        console.log(`Indian: ${metas.length}`);
 
       } else if (type === 'series' && id === 'hollywood_series_latest') {
         const response = await axios.get('https://api.themoviedb.org/3/discover/tv', {
           params: {
             api_key: TMDB_API_KEY,
-            'first_air_date.lte': todayIST,
+            'first_air_date.gte': from,
+            'first_air_date.lte': today,
             with_original_language: 'en',
             sort_by: 'first_air_date.desc',
             'vote_count.gte': '10',
@@ -372,28 +357,26 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         const series = response.data.results || [];
         const formatted = await Promise.all(series.map(s => formatSeries(s)));
         metas = formatted.filter(Boolean);
-        console.log(`TV Series: ${metas.length} shows`);
+        console.log(`TV: ${metas.length}`);
       }
     }
 
     if (metas.length > 0) {
       cache.set(cacheKey, metas);
-      console.log(`Top 3: ${metas.slice(0, 3).map(m => m.name).join(', ')}`);
+      console.log(`Top: ${metas.slice(0, 3).map(m => m.name).join(', ')}`);
     }
 
     return { metas };
   } catch (error) {
-    console.error(`Error ${id} page ${page}:`, error.message);
+    console.error(`Error ${id}:`, error.message);
     return { metas: [] };
   }
 });
 
 builder.defineMetaHandler(async ({ type, id }) => {
   if (!id.startsWith('tt')) return { meta: null };
-
   const cleanId = id.replace('tt', '');
   const cacheKey = `meta_${type}_${cleanId}`;
-
   const cached = cache.get(cacheKey);
   if (cached) return { meta: cached };
 
@@ -410,17 +393,13 @@ builder.defineMetaHandler(async ({ type, id }) => {
     const endpoint = type === 'series' ? 'tv' : 'movie';
 
     const response = await axios.get(`https://api.themoviedb.org/3/${endpoint}/${tmdbId}`, {
-      params: {
-        api_key: TMDB_API_KEY,
-        append_to_response: 'credits,videos,external_ids'
-      },
+      params: { api_key: TMDB_API_KEY, append_to_response: 'credits,videos,external_ids' },
       timeout: 10000
     });
 
     const item = response.data;
     const langLabel = getLanguageLabel(item.original_language || '');
     const rating = item.vote_average ? item.vote_average.toFixed(1) : '';
-
     const cast = item.credits?.cast?.slice(0, 5).map(c => c.name) || [];
     const director = item.credits?.crew?.find(c => c.job === 'Director')?.name || '';
     const genres = item.genres?.map(g => g.name) || [];
@@ -442,20 +421,14 @@ builder.defineMetaHandler(async ({ type, id }) => {
       runtime: (type === 'movie' && item.runtime) ? `${item.runtime} min` : undefined
     };
 
-    cache.set(cacheKey, meta);
+    cache.set(cacheKey, meta, 86400);
     return { meta };
   } catch (error) {
-    console.error(`Meta error for ${id}:`, error.message);
+    console.error(`Meta error:`, error.message);
     return { meta: null };
   }
 });
 
 serveHTTP(builder.getInterface(), { port: PORT });
 
-console.log('\n' + '='.repeat(60));
-console.log('🎬 Indian + Hollywood Catalogue v2.2');
-console.log('='.repeat(60));
-console.log(`📅 IST Date: ${getCurrentDateIST()}`);
-console.log('='.repeat(60));
-console.log('✨ Theatrical releases only (with exact dates)');
-console.log('='.repeat(60) + '\n');
+console.log('🎬 v2.3 - IST: ' + getISTDates().today);
