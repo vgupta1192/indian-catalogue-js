@@ -9,7 +9,7 @@ const cache = new NodeCache({ stdTTL: 1800, checkperiod: 300, maxKeys: 1000 });
 
 const manifest = {
   id: 'org.theatrical.catalogue.2024',
-  version: '3.0.0',
+  version: '3.0.1',
   name: '🎬 Indian + Hollywood Catalogue',
   description: 'Latest theatrical releases with search',
   logo: 'https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg',
@@ -195,18 +195,28 @@ async function formatSeries(series) {
 }
 
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
-  const skip = parseInt(extra.skip || 0);
-  const page = Math.floor(skip / 20) + 1;
   const searchQuery = extra.search || '';
-  const cacheKey = searchQuery ? `${id}_s_${searchQuery}_p${page}` : `${id}_p${page}`;
+  const skip = parseInt(extra.skip || 0, 10) || 0;
+
+  // Base key for this catalog + search combination
+  const pageSizeKeyBase = searchQuery ? `${id}_s_${searchQuery}` : `${id}`;
+  const pageSizeKey = `ps_${pageSizeKeyBase}`;
+
+  // Guess page size from cache, default 20 until we learn real size
+  let pageSize = cache.get(pageSizeKey) || 20;
+
+  // Derive TMDB page from how many items Stremio says it already has
+  const page = Math.floor(skip / pageSize) + 1;
+
+  const cacheKey = `${pageSizeKeyBase}_p${page}`;
 
   const cached = cache.get(cacheKey);
   if (cached) {
-    console.log(`Cache: ${id} p${page}`);
+    console.log(`Cache: ${id} skip=${skip} p${page} pageSize=${pageSize}`);
     return { metas: cached, cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 };
   }
 
-  console.log(`Fetch: ${id} p${page}${searchQuery ? ` q:${searchQuery}` : ''}`);
+  console.log(`Fetch: ${id} skip=${skip} p${page}${searchQuery ? ` q:${searchQuery}` : ''} pageSizeGuess=${pageSize}`);
 
   try {
     let metas = [];
@@ -346,6 +356,10 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
 
     if (metas.length > 0) {
       cache.set(cacheKey, metas);
+      if (skip === 0) {
+        cache.set(pageSizeKey, metas.length, 86400);
+        console.log(`Page size learned for ${pageSizeKeyBase}: ${metas.length}`);
+      }
       console.log(`${id} p${page}: ${metas.length} items`);
     }
 
@@ -414,4 +428,4 @@ builder.defineMetaHandler(async ({ type, id }) => {
 
 serveHTTP(builder.getInterface(), { port: PORT });
 
-console.log('Addon v3.0 - IST: ' + getISTDate());
+console.log('Addon v3.0.1 - IST: ' + getISTDate());
